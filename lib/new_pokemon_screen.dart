@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'pokemon_service.dart';
 
 class NewPokemonScreen extends StatefulWidget {
   const NewPokemonScreen({super.key});
@@ -9,34 +10,61 @@ class NewPokemonScreen extends StatefulWidget {
 }
 
 class _NewPokemonScreenState extends State<NewPokemonScreen> {
-  final _nameController = TextEditingController();
-  final _spriteIdController = TextEditingController();
+  late Future<List<String>> _searchFuture;
+  final _queryController = TextEditingController();
+  Map<String, dynamic>? _selected;
+  bool _loadingDetails = false;
   final _levelController = TextEditingController();
-  final _spriteIdFocusNode = FocusNode();
-  final _levelFocusNode = FocusNode();
-  String? _selectedType;
-  String _previewName = '';
   final _formKey = GlobalKey<FormState>();
 
   final collection = FirebaseFirestore.instance.collection('pokemons');
 
   @override
+  void initState() {
+    super.initState();
+    _searchFuture = fetchPokemonNames();
+  }
+
+  @override
   void dispose() {
-    _nameController.dispose();
-    _spriteIdController.dispose();
+    _queryController.dispose();
     _levelController.dispose();
-    _spriteIdFocusNode.dispose();
-    _levelFocusNode.dispose();
     super.dispose();
+  }
+
+  void _buscar() {
+    final query = _queryController.text.trim();
+    setState(() {
+      _searchFuture =
+          query.isEmpty ? fetchPokemonNames() : fetchPokemonByName(query);
+    });
+  }
+
+  Future<void> _selectPokemon(String name) async {
+    setState(() => _loadingDetails = true);
+    try {
+      final details = await fetchPokemonDetails(name);
+      setState(() {
+        _selected = details;
+        _loadingDetails = false;
+      });
+    } catch (e) {
+      setState(() => _loadingDetails = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erro ao carregar detalhes: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _salvar() async {
     if (!_formKey.currentState!.validate()) return;
     await collection.add({
-      'name': _nameController.text.trim(),
-      'spriteId': int.parse(_spriteIdController.text.trim()),
+      'name': _selected!['name'],
+      'spriteUrl': _selected!['spriteUrl'],
+      'types': _selected!['types'],
       'level': int.parse(_levelController.text.trim()),
-      'types': [_selectedType],
     });
     if (mounted) Navigator.pop(context);
   }
@@ -44,141 +72,153 @@ class _NewPokemonScreenState extends State<NewPokemonScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey.shade100,
       appBar: AppBar(
         title: const Text('Novo Pokémon'),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Form(
-          key: _formKey,
-          autovalidateMode: AutovalidateMode.onUserInteraction,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+      backgroundColor: Colors.grey.shade100,
+      body: _loadingDetails
+          ? const Center(child: CircularProgressIndicator())
+          : (_selected == null ? _buildList() : _buildForm()),
+    );
+  }
+
+  Widget _buildList() {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
             children: [
-              if (_previewName.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: Text(
-                    'Cadastrando: $_previewName…',
-                    style: TextStyle(
-                      color: Colors.red.shade700,
-                      fontStyle: FontStyle.italic,
-                    ),
+              Expanded(
+                child: TextField(
+                  controller: _queryController,
+                  decoration: const InputDecoration(
+                    labelText: 'Buscar Pokémon',
+                    hintText: 'Ex: pikachu',
+                    border: OutlineInputBorder(),
+                    isDense: true,
                   ),
+                  textInputAction: TextInputAction.search,
+                  onSubmitted: (_) => _buscar(),
                 ),
-
-              // Campo nome
-              TextFormField(
-                controller: _nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Nome do Pokémon',
-                  hintText: 'Ex: Charizard',
-                  border: OutlineInputBorder(),
-                ),
-                textInputAction: TextInputAction.next,
-                onChanged: (value) =>
-                    setState(() => _previewName = value.trim()),
-                onFieldSubmitted: (_) =>
-                    _spriteIdFocusNode.requestFocus(),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'O nome não pode estar vazio';
-                  }
-                  if (value.trim().length < 2) {
-                    return 'Nome deve ter ao menos 2 caracteres';
-                  }
-                  return null;
-                },
               ),
-              const SizedBox(height: 16),
-
-              // Campo spriteId
-              TextFormField(
-                controller: _spriteIdController,
-                focusNode: _spriteIdFocusNode,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Sprite ID',
-                  hintText: 'Ex: 6',
-                  border: OutlineInputBorder(),
-                ),
-                textInputAction: TextInputAction.next,
-                onFieldSubmitted: (_) => _levelFocusNode.requestFocus(),
-                validator: (value) {
-                  final id = int.tryParse(value ?? '');
-                  if (id == null) return 'Digite um número';
-                  if (id < 1 || id > 1025) return 'ID deve ser entre 1 e 1025';
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // Campo nível
-              TextFormField(
-                controller: _levelController,
-                focusNode: _levelFocusNode,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Nível inicial',
-                  hintText: 'Ex: 5',
-                  border: OutlineInputBorder(),
-                ),
-                textInputAction: TextInputAction.done,
-                validator: (value) {
-                  final lvl = int.tryParse(value ?? '');
-                  if (lvl == null) return 'Digite um número';
-                  if (lvl < 1 || lvl > 100) {
-                    return 'Nível deve ser entre 1 e 100';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // Dropdown tipo
-              DropdownButtonFormField<String>(
-                value: _selectedType,
-                decoration: const InputDecoration(
-                  labelText: 'Tipo',
-                  border: OutlineInputBorder(),
-                ),
-                items: [
-                  'Fogo',
-                  'Água',
-                  'Planta',
-                  'Elétrico',
-                  'Normal',
-                  'Psíquico',
-                  'Gelo',
-                  'Dragão',
-                ]
-                    .map((t) => DropdownMenuItem(value: t, child: Text(t)))
-                    .toList(),
-                onChanged: (value) =>
-                    setState(() => _selectedType = value),
-                validator: (value) =>
-                    value == null ? 'Selecione um tipo' : null,
-              ),
-              const SizedBox(height: 24),
-
-              // Botão salvar
+              const SizedBox(width: 8),
               ElevatedButton(
-                onPressed: _salvar,
+                onPressed: _buscar,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.deepPurple,
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
-                child: const Text(
-                  'Salvar Pokémon',
-                  style: TextStyle(fontSize: 16),
-                ),
+                child: const Text('Buscar'),
               ),
             ],
           ),
+        ),
+        Expanded(
+          child: FutureBuilder<List<String>>(
+            future: _searchFuture,
+            builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                return Center(child: Text('${snapshot.error}'));
+              }
+              if (!snapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final names = snapshot.data!;
+              return ListView.builder(
+                itemCount: names.length,
+                itemBuilder: (context, i) => ListTile(
+                  title: Text(
+                    names[i],
+                    style: const TextStyle(textBaseline: TextBaseline.alphabetic),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _selectPokemon(names[i]),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildForm() {
+    final spriteUrl = _selected!['spriteUrl'] as String;
+    final name = _selected!['name'] as String;
+    final types = _selected!['types'] as List<dynamic>;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    Image.network(
+                      spriteUrl,
+                      height: 100,
+                      width: 100,
+                      fit: BoxFit.contain,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      name,
+                      style: const TextStyle(
+                          fontSize: 22, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      children: types
+                          .map((t) => Chip(label: Text(t as String)))
+                          .toList(),
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton.icon(
+                      onPressed: () => setState(() => _selected = null),
+                      icon: const Icon(Icons.swap_horiz),
+                      label: const Text('Trocar'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _levelController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Nível inicial',
+                hintText: 'Ex: 5',
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) {
+                final lvl = int.tryParse(value ?? '');
+                if (lvl == null) return 'Digite um número';
+                if (lvl < 1 || lvl > 100) return 'Nível deve ser entre 1 e 100';
+                return null;
+              },
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              onPressed: _salvar,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurple,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              child: const Text('Cadastrar'),
+            ),
+          ],
         ),
       ),
     );
